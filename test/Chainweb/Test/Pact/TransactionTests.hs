@@ -76,6 +76,9 @@ coinReplV1 = "pact/coin-contract/coin.repl"
 coinReplV4 :: FilePath
 coinReplV4 = "pact/coin-contract/v4/coin-v4.repl"
 
+coinReplV5 :: FilePath
+coinReplV5 = "pact/coin-contract/v5/coin-v5.repl"
+
 logger :: Logger
 #if DEBUG_TEST
 logger = newLogger alwaysLog ""
@@ -97,6 +100,7 @@ tests = testGroup "Chainweb.Test.Pact.TransactionTests"
       [ testCase "v1" (ccReplTests coinReplV1)
         -- v2 and v3 repl tests were consolidated in v4
       , testCase "v4" (ccReplTests coinReplV4)
+      , testCase "v5" (ccReplTests coinReplV5)
       ]
     , testCase "Ns Repl Tests" (ccReplTests "pact/namespaces/ns.repl")
     , testCase "Payer Repl Tests" (ccReplTests "pact/gas-payer/gas-payer-v1.repl")
@@ -240,12 +244,12 @@ testCoinbase797DateFix = testCaseSteps "testCoinbase791Fix" $ \step -> do
         (EnforceCoinbaseFailure True) (CoinbaseUsePrecompiled precompile) mc
 
       let h = H.toUntypedHash (H.hash "" :: H.PactHash)
-          tenv = TransactionEnv Transactional pdb logger def
+          tenv = TransactionEnv Transactional pdb logger Nothing def
             noSPVSupport Nothing 0.0 (RequestKey h) 0 def
           txst = TransactionState mempty mempty 0 Nothing (_geGasModel freeGasEnv)
 
       CommandResult _ _ (PactResult pr) _ _ _ _ _ <- evalTransactionM tenv txst $!
-        applyExec defaultInterpreter localCmd [] h permissiveNamespacePolicy
+        applyExec 0 defaultInterpreter localCmd [] h permissiveNamespacePolicy
 
       testResult pr
 

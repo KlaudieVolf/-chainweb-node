@@ -139,6 +139,7 @@ import Chainweb.Payload.PayloadStore
 import Chainweb.Sync.WebBlockHeaderStore
 import Chainweb.TreeDB
 import Chainweb.Utils hiding (Codec, check)
+import Chainweb.Utils.Serialization
 import Chainweb.Version
 import Chainweb.Version.Utils
 import Chainweb.WebBlockHeaderDB
@@ -228,8 +229,8 @@ cutHashesTable :: RocksDb -> RocksDbCas CutHashes
 cutHashesTable rdb = newCas rdb valueCodec keyCodec ["CutHashes"]
   where
     keyCodec = Codec
-        (\(a,b,c) -> runPut $ encodeCutHeightBe a >> encodeBlockWeightBe b >> encodeCutId c)
-        (runGet $ (,,) <$> decodeCutHeightBe <*> decodeBlockWeightBe <*> decodeCutId)
+        (\(a,b,c) -> runPutS $ encodeCutHeightBe a >> encodeBlockWeightBe b >> encodeCutId c)
+        (runGetS $ (,,) <$> decodeCutHeightBe <*> decodeBlockWeightBe <*> decodeCutId)
     valueCodec = Codec encodeToByteString decodeStrictOrThrow'
 
 -- -------------------------------------------------------------------------- --
@@ -450,15 +451,18 @@ startCutDb config logfun headerStore payloadStore cutHashesStore = mask_ $ do
                     tableIterPrev it
                     go it
                 Left e -> throwM e
-                Right hm -> unsafeMkCut v
-                    <$> case _cutDbParamsInitialHeightLimit config of
-                        Nothing -> return hm
-                        Just h -> do
-                            let
-                                cutHeightTarget = min 0 $
-                                    avgCutHeightAt v h -
-                                        CutHeight (int $ diameterAtCutHeight v (maxBound :: CutHeight) * chainCountAt v (maxBound :: BlockHeight))
-                            limitCutHeaders wbhdb cutHeightTarget hm
+                Right hm -> do
+                    limitedCut <- unsafeMkCut v
+                        <$> case _cutDbParamsInitialHeightLimit config of
+                            Nothing -> return hm
+                            Just h -> do
+                                let
+                                    cutHeightTarget = max 0 $
+                                        avgCutHeightAt v h -
+                                            CutHeight (int $ diameterAtCutHeight v (maxBound :: CutHeight) * chainCountAt v (maxBound :: BlockHeight))
+                                limitCutHeaders wbhdb cutHeightTarget hm
+                    casInsert cutHashesStore (cutToCutHashes Nothing limitedCut)
+                    return limitedCut
 
 -- | Stop the cut validation pipeline.
 --
@@ -544,7 +548,7 @@ processCuts conf logFun headerStore payloadStore cutHashesStore queue cutVar = d
 
     maybeWrite rng newCut = do
         r :: Double <- Prob.uniform rng
-        when (r > 1 / int (int (_cutDbParamsWritingFrequency conf) * chainCountAt v maxBound)) $ do
+        when (r < 1 / int (int (_cutDbParamsWritingFrequency conf) * chainCountAt v maxBound)) $ do
             loggc Info newCut "writing cut"
             casInsert cutHashesStore (cutToCutHashes Nothing newCut)
 

@@ -62,16 +62,10 @@ module Chainweb.Utils
 , (&)
 , IxedGet(..)
 , minusOrZero
+, mutableVectorFromList
 
 -- * Encoding and Serialization
 , EncodingException(..)
-
--- ** Binary
-, runGet
-, runPut
-, runGetEither
-, eof
-, MonadGetExtra(..)
 
 -- ** Codecs
 , Codec(..)
@@ -166,6 +160,8 @@ module Chainweb.Utils
 -- * Resource Management
 , concurrentWith
 , withLink
+, concurrentlies
+, concurrentlies_
 
 -- * Tuples
 , thd
@@ -216,6 +212,7 @@ import Control.Lens hiding ((.=))
 import Control.Monad
 import Control.Monad.Catch hiding (bracket)
 import Control.Monad.IO.Class
+import Control.Monad.Primitive
 import Control.Monad.Reader as Reader
 
 import Data.Aeson.Text (encodeToLazyText)
@@ -223,8 +220,6 @@ import qualified Data.Aeson.Types as Aeson
 import qualified Data.Attoparsec.Text as A
 import Data.Bifunctor
 import Data.Bool (bool)
-import Data.Bytes.Get
-import Data.Bytes.Put
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Base64 as B64
@@ -239,9 +234,6 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.HashSet as HS
 import Data.Monoid (Endo)
 import Data.Proxy
-import Data.Serialize.Get (Get)
-import qualified Data.Serialize.Get as Get
-import Data.Serialize.Put (Put)
 import Data.String (IsString(..))
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -249,6 +241,7 @@ import qualified Data.Text.Lazy as TL
 import Data.These (These(..))
 import Data.Time
 import qualified Data.Vector as V
+import qualified Data.Vector.Mutable as MV
 import Data.Word
 
 import GHC.Generics
@@ -404,6 +397,17 @@ minusOrZero :: Ord a => Num a => a -> a -> a
 minusOrZero a b = a - min a b
 {-# INLINE minusOrZero #-}
 
+-- | Equivalent to V.thaw . V.fromList but by inspection probably faster.
+mutableVectorFromList
+    :: PrimMonad m
+    => [a]
+    -> m (MV.MVector (PrimState m) a)
+mutableVectorFromList as = do
+    vec <- MV.unsafeNew (length as)
+    forM_ (zip [0..] as) $ uncurry (MV.unsafeWrite vec)
+    return vec
+{-# inline mutableVectorFromList #-}
+
 -- -------------------------------------------------------------------------- --
 -- * Read only Ixed
 
@@ -444,38 +448,6 @@ data EncodingException where
     deriving anyclass (NFData)
 
 instance Exception EncodingException
-
--- | Decode a value from a 'B.ByteString'. In case of a failure a
--- 'DecodeException' is thrown.
---
-runGet :: MonadThrow m => Get a -> B.ByteString -> m a
-runGet g = fromEitherM . runGetEither (g <* eof)
-{-# INLINE runGet #-}
-
--- | Decode a value from a 'B.ByteString' and return either the result or a
--- 'DecodeException'.
---
-runGetEither :: Get a -> B.ByteString -> Either EncodingException a
-runGetEither g = first (DecodeException . T.pack) . runGetS (g <* eof)
-{-# INLINE runGetEither #-}
-
--- | Encode a value into a 'B.ByteString'.
---
-runPut :: Put -> B.ByteString
-runPut = runPutS
-{-# INLINE runPut #-}
-
-eof :: Get ()
-eof = unlessM isEmpty $ fail "pending bytes in input"
-{-# INLINE eof #-}
-
-class MonadGet m => MonadGetExtra m where
-    label :: String -> m a -> m a
-    isolate :: Int -> m a -> m a
-
-instance MonadGetExtra Get where
-    label = Get.label
-    isolate = Get.isolate
 
 -- -------------------------------------------------------------------------- --
 -- ** Text
@@ -1217,6 +1189,13 @@ withLink act = do
   link a
   return a
 
+-- | Like `sequence` for IO but concurrent
+concurrentlies :: forall a. [IO a] -> IO [a]
+concurrentlies = runConcurrently . traverse Concurrently
+
+-- | Like `sequence_` for IO but concurrent
+concurrentlies_ :: forall a. [IO a] -> IO ()
+concurrentlies_ = void . concurrentlies
 
 -- -------------------------------------------------------------------------- --
 -- Tuples
